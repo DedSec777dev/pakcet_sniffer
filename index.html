@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Packet Scrutinizer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Packet Scrutinizer</h1>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="interface">Interface (e.g., eth0, wlan0, any):</label>
+                <input type="text" id="interface" value="any">
+            </div>
+            <div class="control-group">
+                <label for="bpfFilter">BPF Filter (e.g., tcp port 80, host 192.168.1.1):</label>
+                <input type="text" id="bpfFilter" placeholder="Optional BPF filter">
+            </div>
+            <div class="control-group" style="flex-basis: 100%;">
+                <label for="domainFilter">Target Domains (comma or newline separated, e.g., example.com, test.org):</label>
+                <textarea id="domainFilter" rows="3" placeholder="Optional domains to flag"></textarea>
+            </div>
+            <div class="control-buttons">
+                <button id="startCaptureBtn">Start Live Capture</button>
+                <button id="stopCaptureBtn">Stop Capture/Analysis</button>
+                <button id="clearPacketsBtn">Clear All Displayed Packets</button>
+            </div>
+
+            <hr> <div class="control-group" style="flex-basis: 100%;">
+                <h3>Analyze PCAP File</h3>
+                <label for="pcapFile">Upload PCAP/PCAPng File:</label>
+                <input type="file" id="pcapFile" accept=".pcap,.pcapng">
+                <button id="uploadPcapBtn" style="margin-top: 10px;">Upload & Analyze PCAP</button>
+                <p class="pcap-upload-info">Note: Target Domains filter will also apply to PCAP analysis.</p>
+            </div>
+        </div>
+
+        <p class="status-message">Status: <span id="captureStatus">Inactive</span></p>
+
+        <h2>Captured Packets (All)</h2>
+        <label for="searchBar">Search Packets:</label>
+        <input type="text" id="searchBar" placeholder="Search IP, domain, protocol, or content">
+        <div class="packet-table-container">
+            <table id="packetTable">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Source IP</th>
+                        <th>Destination IP</th>
+                        <th>Protocol</th>
+                        <th>Length</th>
+                        <th>Summary</th>
+                        <th>Payload Preview</th>
+                        <th>Flagged</th>
+                    </tr>
+                </thead>
+                <tbody id="packetTableBody">
+                </tbody>
+            </table>
+        </div>
+
+        ---
+
+        <h2>Flagged Packets Log (Targeted & Intrusion)</h2>
+        <div class="packet-table-container">
+            <table id="flaggedPacketTable">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Source IP</th>
+                        <th>Destination IP</th>
+                        <th>Protocol</th>
+                        <th>Summary</th>
+                        <th>Flagged Reason(s)</th>
+                    </tr>
+                </thead>
+                <tbody id="flaggedPacketTableBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
