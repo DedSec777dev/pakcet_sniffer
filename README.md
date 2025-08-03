@@ -1,2 +1,2 @@
-#netSecure - packet sniffer, ids nad ips
+#netSecure - packet sniffer, ids and ips
 
