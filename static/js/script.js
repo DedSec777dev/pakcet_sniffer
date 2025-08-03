@@ -1,381 +1,533 @@
-document.addEventListener('DOMContentLoaded', function() {
-    // Renamed elements for clarity and consistency with HTML
-    const startCaptureBtn = document.getElementById('startCaptureBtn');
-    const stopCaptureBtn = document.getElementById('stopCaptureBtn');
-    const clearPacketsBtn = document.getElementById('clearPacketsBtn');
-    const interfaceInput = document.getElementById('interface');
-    const bpfFilterInput = document.getElementById('bpfFilter');
+// static/js/script.js
+
+document.addEventListener('DOMContentLoaded', () => {
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const clearButton = document.getElementById('clearButton');
+    const uploadPcapButton = document.getElementById('uploadPcapButton');
+    const applyBlocksButton = document.getElementById('applyBlocksButton');
+    const refreshBlocksButton = document.getElementById('refreshBlocksButton');
+
+    const interfaceSelect = document.getElementById('interfaceSelect');
+    const refreshInterfacesButton = document.getElementById('refreshInterfacesButton');
+    const filterInput = document.getElementById('filter');
     const domainFilterInput = document.getElementById('domainFilter');
-    const searchBar = document.getElementById('searchBar');
-    const captureStatusSpan = document.getElementById('captureStatus');
-    const packetTableBody = document.getElementById('packetTableBody');
-    const flaggedPacketTableBody = document.getElementById('flaggedPacketTableBody');
-
-    // NEW: PCAP file upload elements
     const pcapFileInput = document.getElementById('pcapFile');
-    const uploadPcapBtn = document.getElementById('uploadPcapBtn');
 
-    let packetFetchInterval;
-    let flaggedPacketFetchInterval;
-    let allDisplayedPackets = [];
-    let currentPacketCount = 0;
-    let currentFlaggedPacketCount = 0;
+    const sourceIpsBlockTextarea = document.getElementById('sourceIpsBlock');
+    const destIpsBlockTextarea = document.getElementById('destIpsBlock');
+    const domainsBlockTextarea = document.getElementById('domainsBlock');
+    const blockStatusList = document.getElementById('blockStatusList');
 
-    // --- NEW: Function to update button and input states based on backend status ---
-    function updateCombinedButtonStates(status) {
-        const isCapturing = status.is_capturing;
-        const isAnalyzingPcap = status.is_analyzing_pcap;
-        const isActive = isCapturing || isAnalyzingPcap;
+    const statusMessageDiv = document.getElementById('statusMessage');
+    const pcapStatusMessageDiv = document.getElementById('pcapStatusMessage');
+    const packetTableBody = document.querySelector('#packetTable tbody');
+    const flaggedPacketTableBody = document.querySelector('#flaggedPacketTable tbody');
+    const totalPacketCountSpan = document.getElementById('totalPacketCount');
+    const flaggedPacketCountSpan = document.getElementById('flaggedPacketCount');
 
-        // Disable/enable controls based on overall activity
-        startCaptureBtn.disabled = isActive;
-        uploadPcapBtn.disabled = isActive;
-        stopCaptureBtn.disabled = !isActive;
-        clearPacketsBtn.disabled = isActive; // Prevent clearing data during active operation
+    // Search elements
+    const flaggedSearchInput = document.getElementById('flaggedSearchInput');
+    const flaggedSearchButton = document.getElementById('flaggedSearchButton');
+    const flaggedClearSearchButton = document.getElementById('flaggedClearSearchButton');
+    const allPacketsSearchInput = document.getElementById('allPacketsSearchInput');
+    const allPacketsSearchButton = document.getElementById('allPacketsSearchButton');
+    const allPacketsClearSearchButton = document = document.getElementById('allPacketsClearSearchButton');
 
-        // Input fields for live capture and domain filter
-        interfaceInput.disabled = isActive;
-        bpfFilterInput.disabled = isActive;
-        domainFilterInput.disabled = isActive;
+    let fetchPacketsIntervalId = null;
+    let fetchFlaggedPacketsIntervalId = null;
+    let fetchStatusIntervalId = null; // Interval for status updates
+    let fetchBlockStatusIntervalId = null;
 
-        // PCAP file input
-        pcapFileInput.disabled = isActive;
+    let allPacketsData = []; // Stores all fetched packets
+    let flaggedPacketsData = []; // Stores all fetched flagged packets
 
-        // Search bar
-        searchBar.disabled = isActive && allDisplayedPackets.length === 0;
+    const MAX_DISPLAY_ROWS = 500; // Limit rows for performance
 
-        // Status message
-        if (isCapturing) {
-            captureStatusSpan.textContent = "Capturing Live Traffic...";
-            captureStatusSpan.className = "status-message active"; // Add a class for styling
-        } else if (isAnalyzingPcap) {
-            captureStatusSpan.textContent = "Analyzing PCAP File...";
-            captureStatusSpan.className = "status-message active"; // Add a class for styling
-        } else {
-            captureStatusSpan.textContent = "Inactive";
-            captureStatusSpan.className = "status-message inactive"; // Add a class for styling
+    // --- Utility Functions ---
+
+    /**
+     * Displays a status message in the UI.
+     * @param {string} message The message to display.
+     * @param {'success'|'error'|'info'} type The type of message for styling.
+     * @param {HTMLElement} targetDiv The div element to display the message in.
+     */
+    function showStatusMessage(message, type, targetDiv = statusMessageDiv) {
+        targetDiv.textContent = message;
+        targetDiv.className = `status-message status-${type}`;
+        setTimeout(() => {
+            targetDiv.textContent = '';
+            targetDiv.className = 'status-message';
+        }, 5000); // Clear message after 5 seconds
+    }
+
+    /**
+     * Fetches the current capture/analysis status from the backend.
+     * @returns {Promise<{is_capturing: boolean, is_analyzing_pcap: boolean}>}
+     */
+    async function getStatus() {
+        try {
+            const response = await fetch('/get_status');
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error('Error fetching status:', error);
+            showStatusMessage('Failed to connect to backend. Is the server running?', 'error');
+            return { is_capturing: false, is_analyzing_pcap: false };
         }
     }
 
-    // --- Main Packet Table Rendering ---
-    function renderMainTable(packetsToDisplay) {
-        packetTableBody.innerHTML = ''; // Clear existing rows
+    /**
+     * Updates the state of UI buttons based on the current capture/analysis status.
+     */
+    async function updateButtons() {
+        const status = await getStatus();
+
+        // Enable/disable main action buttons
+        startButton.disabled = status.is_capturing || status.is_analyzing_pcap;
+        stopButton.disabled = !(status.is_capturing || status.is_analyzing_pcap);
+        uploadPcapButton.disabled = status.is_capturing || status.is_analyzing_pcap;
+        pcapFileInput.disabled = status.is_capturing || status.is_analyzing_pcap;
+
+        // Interface controls
+        interfaceSelect.disabled = status.is_capturing || status.is_analyzing_pcap;
+        refreshInterfacesButton.disabled = status.is_capturing || status.is_analyzing_pcap;
+
+        // Blocking controls
+        applyBlocksButton.disabled = status.is_analyzing_pcap; // Can apply blocks only during live capture or when idle
+
+        // Manage intervals and status messages
+        if (status.is_capturing) {
+            showStatusMessage('Live capture running...', 'info', statusMessageDiv);
+            showStatusMessage('', 'info', pcapStatusMessageDiv); // Clear PCAP message
+            startFetchingPackets();
+            startFetchingFlaggedPackets();
+            startFetchingBlockStatus(); // Start fetching active blocks
+        } else if (status.is_analyzing_pcap) {
+            showStatusMessage('PCAP analysis in progress...', 'info', statusMessageDiv);
+            showStatusMessage('Analysis running...', 'info', pcapStatusMessageDiv);
+            startFetchingPackets();
+            startFetchingFlaggedPackets();
+            stopFetchingBlockStatus(); // No active blocks during passive analysis
+        } else {
+            showStatusMessage('Ready.', 'info', statusMessageDiv);
+            showStatusMessage('', 'info', pcapStatusMessageDiv); // Clear PCAP message
+            stopFetchingPackets();
+            stopFetchingFlaggedPackets();
+            startFetchingBlockStatus(); // Always fetch block status when idle
+        }
+    }
+
+    /**
+     * Starts the interval for fetching all packets.
+     */
+    function startFetchingPackets() {
+        if (!fetchPacketsIntervalId) {
+            fetchPacketsIntervalId = setInterval(fetchPackets, 1000); // Fetch every 1 second
+        }
+    }
+
+    /**
+     * Stops the interval for fetching all packets.
+     */
+    function stopFetchingPackets() {
+        if (fetchPacketsIntervalId) {
+            clearInterval(fetchPacketsIntervalId);
+            fetchPacketsIntervalId = null;
+        }
+    }
+
+    /**
+     * Starts the interval for fetching flagged packets.
+     */
+    function startFetchingFlaggedPackets() {
+        if (!fetchFlaggedPacketsIntervalId) {
+            fetchFlaggedPacketsIntervalId = setInterval(fetchFlaggedPackets, 1500); // Fetch every 1.5 seconds
+        }
+    }
+
+    /**
+     * Stops the interval for fetching flagged packets.
+     */
+    function stopFetchingFlaggedPackets() {
+        if (fetchFlaggedPacketsIntervalId) {
+            clearInterval(fetchFlaggedPacketsIntervalId);
+            fetchFlaggedPacketsIntervalId = null;
+        }
+    }
+
+    /**
+     * Starts the interval for fetching block status.
+     */
+    function startFetchingBlockStatus() {
+        if (!fetchBlockStatusIntervalId) {
+            fetchBlockStatusIntervalId = setInterval(fetchBlockStatus, 3000); // Fetch every 3 seconds
+        }
+    }
+
+    /**
+     * Stops the interval for fetching block status.
+     */
+    function stopFetchingBlockStatus() {
+        if (fetchBlockStatusIntervalId) {
+            clearInterval(fetchBlockStatusIntervalId);
+            fetchBlockStatusIntervalId = null;
+        }
+    }
+
+    /**
+     * Fetches all packets from the backend and updates the 'All Packets' table.
+     */
+    async function fetchPackets() {
+        try {
+            const response = await fetch('/get_packets');
+            allPacketsData = await response.json(); // Store full data
+            renderTable('packetTable', allPacketsSearchInput.value, allPacketsData);
+            totalPacketCountSpan.textContent = allPacketsData.length;
+        } catch (error) {
+            console.error('Error fetching all packets:', error);
+            // Don't stop interval here, let updateButtons handle it if backend is truly down
+        }
+    }
+
+    /**
+     * Fetches flagged packets from the backend and updates the 'Flagged Packets' table.
+     */
+    async function fetchFlaggedPackets() {
+        try {
+            const response = await fetch('/get_flagged_packets');
+            flaggedPacketsData = await response.json(); // Store full data
+            renderTable('flaggedPacketTable', flaggedSearchInput.value, flaggedPacketsData);
+            flaggedPacketCountSpan.textContent = flaggedPacketsData.length;
+        } catch (error) {
+            console.error('Error fetching flagged packets:', error);
+            // Don't stop interval here
+        }
+    }
+
+    /**
+     * Fetches and displays the current block configuration and active firewall rules.
+     */
+    async function fetchBlockStatus() {
+        try {
+            const response = await fetch('/get_blocks_status');
+            const status = await response.json();
+            blockStatusList.innerHTML = '';
+
+            // Configured Blocks
+            blockStatusList.innerHTML += '<li><strong>Configured Source IPs:</strong></li>';
+            if (status.source_ips_configured.length > 0) {
+                status.source_ips_configured.forEach(ip => blockStatusList.innerHTML += `<li>» ${ip}</li>`);
+            } else {
+                blockStatusList.innerHTML += '<li>» None</li>';
+            }
+
+            blockStatusList.innerHTML += '<li><strong>Configured Destination IPs:</strong></li>';
+            if (status.dest_ips_configured.length > 0) {
+                status.dest_ips_configured.forEach(ip => blockStatusList.innerHTML += `<li>» ${ip}</li>`);
+            } else {
+                blockStatusList.innerHTML += '<li>» None</li>';
+            }
+
+            blockStatusList.innerHTML += '<li><strong>Configured Domains:</strong></li>';
+            if (status.domains_configured.length > 0) {
+                status.domains_configured.forEach(domain => blockStatusList.innerHTML += `<li>» ${domain}</li>`);
+            } else {
+                blockStatusList.innerHTML += '<li>» None</li>';
+            }
+
+            // Active IPTables Blocks (only if capturing)
+            blockStatusList.innerHTML += '<li><strong>Active Firewall Blocks (if capture running):</strong></li>';
+            if (status.active_iptables_blocks.length > 0) {
+                status.active_iptables_blocks.forEach(ip => blockStatusList.innerHTML += `<li>» ${ip}</li>`);
+            } else {
+                blockStatusList.innerHTML += '<li>» None currently active (or no capture running).</li>';
+            }
+
+            blockStatusList.scrollTop = blockStatusList.scrollHeight; // Scroll to bottom
+        } catch (error) {
+            console.error('Error fetching block status:', error);
+            blockStatusList.innerHTML = '<li>Error loading block status. Check server logs.</li>';
+        }
+    }
+
+    /**
+     * Renders packets into a specific table, applying search filters.
+     * @param {string} tableId The ID of the table to render into ('packetTable' or 'flaggedPacketTable').
+     * @param {string} query The search query string.
+     * @param {Array<Object>} data The full array of packet data to filter and render.
+     */
+    function renderTable(tableId, query, data) {
+        const tableBody = document.querySelector(`#${tableId} tbody`);
+        tableBody.innerHTML = ''; // Clear current display
+
+        const lowerCaseQuery = query.toLowerCase();
+        const filteredPackets = data.filter(packet => {
+            // Combine relevant fields for searching based on table type
+            let searchableText = `${packet.timestamp} ${packet.src_ip} ${packet.dst_ip} ${packet.protocol} ${packet.length} ${packet.summary} ${packet.raw_payload}`.toLowerCase();
+            if (tableId === 'flaggedPacketTable') {
+                searchableText += ` ${packet.targeted_reasons.join(' ')} ${packet.intrusion_reasons.join(' ')}`.toLowerCase();
+            } else { // 'packetTable'
+                const flags = [];
+                if (packet.is_targeted_flagged) flags.push('targeted');
+                if (packet.is_intrusion_flagged) flags.push('intrusion');
+                searchableText += ` ${flags.join(' ')}`.toLowerCase();
+            }
+            return searchableText.includes(lowerCaseQuery);
+        });
+
+        // Display only the latest MAX_DISPLAY_ROWS
+        const packetsToDisplay = filteredPackets.slice(-MAX_DISPLAY_ROWS);
+
         packetsToDisplay.forEach(packet => {
-            const row = packetTableBody.insertRow(-1); // Insert at the bottom
+            const row = tableBody.insertRow(0); // Insert at the top for newest packets
 
-            // Apply CSS classes based on flag types for the main table
-            if (packet.is_targeted_flagged) {
-                row.classList.add('flagged-packet'); // For targeted website traffic
-            }
-            if (packet.is_intrusion_flagged) {
-                row.classList.add('intrusion-flagged-packet'); // For intrusion detection
-            }
-            
-            // Set tooltip with combined reasons for the main table
-            let allReasons = [];
-            if (packet.is_targeted_flagged) {
-                allReasons.push("Targeted: " + packet.targeted_reasons.join("; "));
-            }
-            if (packet.is_intrusion_flagged) {
-                allReasons.push("Intrusion: " + packet.intrusion_reasons.join("; "));
-            }
-            if (allReasons.length > 0) {
-                row.title = allReasons.join("\n");
+            // Apply row highlighting based on flags
+            if (packet.is_targeted_flagged && packet.is_intrusion_flagged) {
+                row.classList.add('flagged-both');
+            } else if (packet.is_targeted_flagged) {
+                row.classList.add('flagged-targeted');
+            } else if (packet.is_intrusion_flagged) {
+                row.classList.add('flagged-intrusion');
             }
 
-            // Populate cells for the main table
             row.insertCell(0).textContent = packet.timestamp;
             row.insertCell(1).textContent = packet.src_ip;
             row.insertCell(2).textContent = packet.dst_ip;
             row.insertCell(3).textContent = packet.protocol;
             row.insertCell(4).textContent = packet.length;
             row.insertCell(5).textContent = packet.summary;
-            row.insertCell(6).textContent = packet.raw_payload; // Payload preview
-            
-            const flaggedStatusCell = row.insertCell(7);
-            let flagText = "";
-            if (packet.is_targeted_flagged && packet.is_intrusion_flagged) {
-                flagText = "Both";
-            } else if (packet.is_targeted_flagged) {
-                flagText = "Targeted";
-            } else if (packet.is_intrusion_flagged) {
-                flagText = "Intrusion";
-            } else {
-                flagText = "No";
-            }
-            flaggedStatusCell.textContent = flagText;
-        });
-    }
 
-    // --- Flagged Packet Table Rendering ---
-    function renderFlaggedTable(packetsToDisplay) {
-        flaggedPacketTableBody.innerHTML = ''; // Clear existing rows
-        packetsToDisplay.forEach(packet => {
-            const row = flaggedPacketTableBody.insertRow(0); // Insert at the top (most recent first)
-
-            // Apply CSS classes specific to the flagged table (can be the same or different)
-            if (packet.is_targeted_flagged) {
-                row.classList.add('flagged-packet');
-            }
-            if (packet.is_intrusion_flagged) {
-                row.classList.add('intrusion-flagged-packet');
-            }
-
-            // Populate cells for the flagged table
-            row.insertCell(0).textContent = packet.timestamp;
-            row.insertCell(1).textContent = packet.src_ip;
-            row.insertCell(2).textContent = packet.dst_ip;
-            row.insertCell(3).textContent = packet.protocol;
-            row.insertCell(4).textContent = packet.summary;
-
-            // Combine and display the reasons directly in the flagged log
-            let combinedReasons = [];
-            if (packet.is_targeted_flagged && packet.targeted_reasons.length > 0) {
-                combinedReasons.push('Targeted: ' + packet.targeted_reasons.join('; '));
-            }
-            if (packet.is_intrusion_flagged && packet.intrusion_reasons.length > 0) {
-                combinedReasons.push('Intrusion: ' + packet.intrusion_reasons.join('; '));
-            }
-            row.insertCell(5).textContent = combinedReasons.join(' | '); // Display all reasons
-        });
-    }
-
-    // --- Fetch All Packets (for main table) ---
-    function fetchPackets() {
-        fetch('/get_packets')
-            .then(response => response.json())
-            .then(packets => {
-                // Only update if there are new packets or the table was cleared
-                if (packets.length > currentPacketCount || (currentPacketCount > 0 && packets.length === 0)) {
-                    // Get only the new packets since the last fetch
-                    const newPackets = packets.slice(currentPacketCount);
-                    // Add new packets to the beginning (for reverse order display)
-                    allDisplayedPackets = [...newPackets.reverse(), ...allDisplayedPackets]; 
-                    
-                    // Keep the display buffer size limited (e.g., to MAX_PACKETS_DISPLAY set in Flask)
-                    if (allDisplayedPackets.length > 1000) { // Should match Flask's MAX_PACKETS_DISPLAY
-                        allDisplayedPackets = allDisplayedPackets.slice(0, 1000);
-                    }
-
-                    currentPacketCount = packets.length; // Update the total count
-                    filterAndRenderMainPackets(); // Re-render the main table with new data
+            if (tableId === 'flaggedPacketTable') {
+                // For flagged table, combine reasons and show payload
+                const reasons = [...packet.intrusion_reasons, ...packet.targeted_reasons].filter(Boolean); // Filter out empty strings
+                row.insertCell(6).textContent = reasons.join('; ');
+                row.insertCell(7).textContent = packet.raw_payload;
+            } else { // 'packetTable'
+                // For all packets table, show raw payload and flag indicators
+                row.insertCell(6).textContent = packet.raw_payload;
+                const flagsCell = row.insertCell(7);
+                let flagsHtml = [];
+                if (packet.is_targeted_flagged) {
+                    flagsHtml.push('<span class="flag-indicator" title="Targeted Monitoring">T</span>');
                 }
-            })
-            .catch(error => console.error('Error fetching all packets:', error));
-    }
-
-    // --- Fetch Flagged Packets (for flagged log table) ---
-    function fetchFlaggedPackets() {
-        fetch('/get_flagged_packets')
-            .then(response => response.json())
-            .then(packets => {
-                // Only update if there are new flagged packets or the table was cleared
-                if (packets.length > currentFlaggedPacketCount || (currentFlaggedPacketCount > 0 && packets.length === 0)) {
-                    renderFlaggedTable(packets); // Render all current flagged packets
-                    currentFlaggedPacketCount = packets.length; // Update flagged count
+                if (packet.is_intrusion_flagged) {
+                    flagsHtml.push('<span class="flag-indicator" title="Intrusion Detected">I</span>');
                 }
-            })
-            .catch(error => console.error('Error fetching flagged packets:', error));
-    }
+                flagsCell.innerHTML = flagsHtml.join(' ');
+            }
+        });
 
-    // --- Search/Filter for Main Packet Table ---
-    function filterAndRenderMainPackets() {
-        const searchTerm = searchBar.value.toLowerCase().trim();
-        let filtered = [];
-
-        if (searchTerm === '') {
-            filtered = allDisplayedPackets;
-        } else {
-            filtered = allDisplayedPackets.filter(packet => {
-                const matchesSrcIp = packet.src_ip.toLowerCase().includes(searchTerm);
-                const matchesDstIp = packet.dst_ip.toLowerCase().includes(searchTerm);
-                const matchesProtocol = packet.protocol.toLowerCase().includes(searchTerm);
-                const matchesSummary = packet.summary.toLowerCase().includes(searchTerm);
-                const matchesRawPayload = packet.raw_payload.toLowerCase().includes(searchTerm);
-
-                // Include search in flag reasons
-                const matchesTargetedReason = packet.is_targeted_flagged && packet.targeted_reasons.some(reason => reason.toLowerCase().includes(searchTerm));
-                const matchesIntrusionReason = packet.is_intrusion_flagged && packet.intrusion_reasons.some(reason => reason.toLowerCase().includes(searchTerm));
-
-                return matchesSrcIp || matchesDstIp || matchesProtocol || 
-                       matchesSummary || matchesRawPayload || matchesTargetedReason || matchesIntrusionReason;
-            });
+        // Auto-scroll to the bottom (only if not currently searching)
+        if (!query) {
+             tableBody.parentElement.scrollTop = tableBody.parentElement.scrollHeight;
         }
-        renderMainTable(filtered); // Render the filtered results to the main table
     }
 
-    // --- Initial Load Logic ---
-    fetch('/get_status')
-        .then(response => response.json())
-        .then(data => {
-            updateCombinedButtonStates(data); // Use the new function
-            if (data.is_capturing || data.is_analyzing_pcap) {
-                // Start both fetching intervals if any operation is active
-                packetFetchInterval = setInterval(fetchPackets, 1000); // Main packets
-                flaggedPacketFetchInterval = setInterval(fetchFlaggedPackets, 1000); // Flagged log
+
+    // --- Interface Dropdown Population ---
+    /**
+     * Fetches and populates the network interfaces dropdown.
+     */
+    async function populateInterfacesDropdown() {
+        try {
+            const response = await fetch('/get_interfaces');
+            const interfaces = await response.json();
+
+            interfaceSelect.innerHTML = ''; // Clear existing options
+
+            // Add default "Any" option
+            const anyOption = document.createElement('option');
+            anyOption.value = 'any';
+            anyOption.textContent = 'Any (Auto-detect)';
+            interfaceSelect.appendChild(anyOption);
+
+            // Add detected interfaces
+            // The app.py now returns {name, display_name} objects for Windows, or strings for Linux/macOS
+            // The JSON response from app.py will be an array.
+            // If there's an 'error' key, it means the backend returned an error object.
+            if (interfaces && interfaces.error) {
+                console.error("Error fetching interfaces:", interfaces.message);
+                showStatusMessage(`Error loading interfaces: ${interfaces.message}`, 'error', statusMessageDiv);
+                const errorOption = document.createElement('option');
+                errorOption.value = '';
+                errorOption.textContent = `Error: ${interfaces.message.substring(0, 50)}...`;
+                errorOption.disabled = true;
+                interfaceSelect.appendChild(errorOption);
+            } else if (Array.isArray(interfaces)) {
+                interfaces.forEach(iface => {
+                    const option = document.createElement('option');
+                    if (typeof iface === 'object' && iface !== null && 'name' in iface && 'display_name' in iface) {
+                        // This is the Windows case (object with name and display_name)
+                        option.value = iface.name;
+                        option.textContent = iface.display_name;
+                    } else {
+                        // This is the Linux/macOS case (string name)
+                        option.value = iface;
+                        option.textContent = iface;
+                    }
+                    interfaceSelect.appendChild(option);
+                });
+            } else {
+                 console.error("Unexpected interface response format:", interfaces);
+                 showStatusMessage('Unexpected interface data format from backend.', 'error', statusMessageDiv);
             }
-            fetchPackets(); // Initial fetch for main packets
-            fetchFlaggedPackets(); // Initial fetch for flagged packets
-        })
-        .catch(error => console.error('Error fetching initial status:', error));
+
+        } catch (error) {
+            console.error('Failed to fetch interfaces:', error);
+            interfaceSelect.innerHTML = '<option value="any">Any (Error loading interfaces)</option>';
+            showStatusMessage('Failed to load network interfaces. Ensure the Flask app is running and accessible.', 'error', statusMessageDiv);
+        }
+    }
+
 
     // --- Event Listeners ---
-
-    // Start Capture button event
-    startCaptureBtn.addEventListener('click', function() {
-        const interfaceVal = interfaceInput.value;
-        const bpfFilterVal = bpfFilterInput.value;
+    startButton.addEventListener('click', async () => {
+        const interfaceVal = interfaceSelect.value;
+        const filterVal = filterInput.value;
         const domainFilterVal = domainFilterInput.value;
 
-        fetch('/start_capture', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `interface=${encodeURIComponent(interfaceVal)}&filter=${encodeURIComponent(bpfFilterVal)}&domain_filter=${encodeURIComponent(domainFilterVal)}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            alert(data.message);
+        const formData = new FormData();
+        formData.append('interface', interfaceVal);
+        formData.append('filter', filterVal);
+        formData.append('domain_filter', domainFilterVal);
+
+        try {
+            const response = await fetch('/start_capture', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            showStatusMessage(data.message, data.status === 'success' ? 'success' : 'error');
+            updateButtons(); // Update button states based on new status
+        } catch (error) {
+            console.error('Error starting capture:', error);
+            showStatusMessage('Failed to start capture. Check console for details.', 'error');
+            updateButtons(); // Try to update in case of error
+        }
+    });
+
+    stopButton.addEventListener('click', async () => {
+        try {
+            const response = await fetch('/stop_capture', {
+                method: 'POST'
+            });
+            const data = await response.json();
+            showStatusMessage(data.message, data.status === 'success' ? 'success' : 'error');
+            updateButtons(); // Update button states after stopping
+        } catch (error) {
+            console.error('Error stopping capture:', error);
+            showStatusMessage('Failed to stop capture. Check console for details.', 'error');
+            updateButtons(); // Try to update in case of error
+        }
+    });
+
+    clearButton.addEventListener('click', async () => {
+        try {
+            const response = await fetch('/clear_packets', {
+                method: 'POST'
+            });
+            const data = await response.json();
+            showStatusMessage(data.message, data.status);
             if (data.status === 'success') {
-                updateCombinedButtonStates({ is_capturing: true, is_analyzing_pcap: false });
-                // Reset counts and clear display on new capture start
-                currentPacketCount = 0;
-                currentFlaggedPacketCount = 0;
-                allDisplayedPackets = [];
+                allPacketsData = [];
+                flaggedPacketsData = [];
                 packetTableBody.innerHTML = '';
                 flaggedPacketTableBody.innerHTML = '';
-                searchBar.value = '';
-                
-                // Clear any existing intervals and start new ones
-                clearInterval(packetFetchInterval);
-                clearInterval(flaggedPacketFetchInterval);
-                packetFetchInterval = setInterval(fetchPackets, 1000);
-                flaggedPacketFetchInterval = setInterval(fetchFlaggedPackets, 1000);
-            } else {
-                // If starting fails, fetch current status to correctly update UI
-                fetch('/get_status')
-                    .then(res => res.json())
-                    .then(status => updateCombinedButtonStates(status));
+                totalPacketCountSpan.textContent = '0';
+                flaggedPacketCountSpan.textContent = '0';
+                allPacketsSearchInput.value = ''; // Clear search input
+                flaggedSearchInput.value = ''; // Clear search input
             }
-        })
-        .catch(error => {
-            console.error('Error starting capture:', error);
-            alert('Failed to start capture due to a network or server error.');
-            // Fetch status to ensure UI is correct after error
-            fetch('/get_status')
-                .then(res => res.json())
-                .then(status => updateCombinedButtonStates(status));
-        });
+        } catch (error) {
+            console.error('Error clearing packets:', error);
+            showStatusMessage('Failed to clear packets. Check console for details.', 'error');
+        }
     });
 
-    // Stop Capture button event
-    stopCaptureBtn.addEventListener('click', function() {
-        fetch('/stop_capture', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            alert(data.message);
-            if (data.status === 'success') {
-                updateCombinedButtonStates({ is_capturing: false, is_analyzing_pcap: false });
-                // Clear both intervals
-                clearInterval(packetFetchInterval);
-                clearInterval(flaggedPacketFetchInterval);
-                // Re-render to ensure final state is shown after stop
-                filterAndRenderMainPackets();
-                fetchFlaggedPackets(); // Fetch final flagged packets to display
-            } else {
-                // If stopping fails, fetch current status to correctly update UI
-                fetch('/get_status')
-                    .then(res => res.json())
-                    .then(status => updateCombinedButtonStates(status));
-            }
-        })
-        .catch(error => {
-            console.error('Error stopping capture:', error);
-            alert('Failed to stop capture due to a network or server error.');
-            fetch('/get_status')
-                .then(res => res.json())
-                .then(status => updateCombinedButtonStates(status));
-        });
-    });
-
-    // Clear All Displayed Packets button event
-    clearPacketsBtn.addEventListener('click', function() {
-        fetch('/clear_packets', { method: 'POST' })
-            .then(response => response.json())
-            .then(data => {
-                alert(data.message);
-                if (data.status === 'success') {
-                    allDisplayedPackets = [];
-                    currentPacketCount = 0;
-                    currentFlaggedPacketCount = 0;
-                    packetTableBody.innerHTML = '';
-                    flaggedPacketTableBody.innerHTML = '';
-                    searchBar.value = ''; // Clear search bar too
-                    // After clearing, fetch status to ensure button states are correct
-                    fetch('/get_status')
-                        .then(res => res.json())
-                        .then(status => updateCombinedButtonStates(status));
-                }
-            })
-            .catch(error => console.error('Error clearing packets:', error));
-    });
-
-    // NEW: Upload PCAP button event
-    uploadPcapBtn.addEventListener('click', function() {
-        const pcapFile = pcapFileInput.files[0];
+    uploadPcapButton.addEventListener('click', async () => {
+        const file = pcapFileInput.files[0];
         const domainFilterVal = domainFilterInput.value;
 
-        if (!pcapFile) {
-            alert('Please select a PCAP file to upload.');
+        if (!file) {
+            showStatusMessage('Please select a PCAP file to upload.', 'error', pcapStatusMessageDiv);
             return;
         }
 
         const formData = new FormData();
-        formData.append('pcap_file', pcapFile);
-        formData.append('domain_filter', domainFilterVal); // Pass domain filter to backend
+        formData.append('pcap_file', file);
+        formData.append('domain_filter', domainFilterVal);
 
-        // Set status and disable controls immediately
-        updateCombinedButtonStates({ is_capturing: false, is_analyzing_pcap: true });
-        // Clear previous data before starting new analysis on UI
-        currentPacketCount = 0;
-        currentFlaggedPacketCount = 0;
-        allDisplayedPackets = [];
-        packetTableBody.innerHTML = '';
-        flaggedPacketTableBody.innerHTML = '';
-        searchBar.value = '';
+        showStatusMessage('Uploading and analyzing...', 'info', pcapStatusMessageDiv);
+        updateButtons(); // Update buttons immediately to show analysis in progress
 
-        // Clear any existing intervals and start new ones for polling results
-        clearInterval(packetFetchInterval);
-        clearInterval(flaggedPacketFetchInterval);
-        packetFetchInterval = setInterval(fetchPackets, 1000);
-        flaggedPacketFetchInterval = setInterval(fetchFlaggedPackets, 1000);
-
-        fetch('/upload_pcap', {
-            method: 'POST',
-            body: formData // FormData automatically sets 'Content-Type': 'multipart/form-data'
-        })
-        .then(response => response.json())
-        .then(data => {
-            alert(data.message);
-            if (data.status === 'success' || data.status === 'analysis_started') {
-                // Backend initiated analysis, UI will update via polling intervals
-                // No explicit updateCombinedButtonStates here, as polling handles it
-            } else {
-                // If upload/analysis fails, fetch current status to correctly update UI
-                fetch('/get_status')
-                    .then(res => res.json())
-                    .then(status => updateCombinedButtonStates(status));
-            }
-        })
-        .catch(error => {
+        try {
+            const response = await fetch('/upload_pcap', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            showStatusMessage(data.message, response.ok ? 'success' : 'error', pcapStatusMessageDiv);
+            updateButtons();
+        } catch (error) {
             console.error('Error uploading PCAP:', error);
-            alert('Failed to upload and analyze PCAP file due to a network or server error.');
-            // Fetch status to ensure UI is correct after error
-            fetch('/get_status')
-                .then(res => res.json())
-                .then(status => updateCombinedButtonStates(status));
-        });
+            showStatusMessage(`Failed to upload PCAP: ${error.message}`, 'error', pcapStatusMessageDiv);
+            updateButtons();
+        }
     });
 
-    // Search bar input event
-    searchBar.addEventListener('input', filterAndRenderMainPackets);
+    applyBlocksButton.addEventListener('click', async () => {
+        const sourceIps = sourceIpsBlockTextarea.value;
+        const destIps = destIpsBlockTextarea.value;
+        const domains = domainsBlockTextarea.value;
+
+        const formData = new FormData();
+        formData.append('source_ips_block', sourceIps);
+        formData.append('dest_ips_block', destIps);
+        formData.append('domains_block', domains);
+
+        try {
+            const response = await fetch('/manage_blocks', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            showStatusMessage(data.message, data.status === 'success' ? 'success' : 'error');
+            fetchBlockStatus(); // Refresh block status display
+        } catch (error) {
+            console.error('Error applying blocks:', error);
+            showStatusMessage('Failed to apply blocks. Check console for details.', 'error');
+        }
+    });
+
+    refreshBlocksButton.addEventListener('click', fetchBlockStatus);
+    refreshInterfacesButton.addEventListener('click', populateInterfacesDropdown);
+
+    // --- Search Event Listeners ---
+    flaggedSearchButton.addEventListener('click', () => {
+        renderTable('flaggedPacketTable', flaggedSearchInput.value, flaggedPacketsData);
+    });
+    flaggedSearchInput.addEventListener('keyup', () => { // Live search as user types
+        renderTable('flaggedPacketTable', flaggedSearchInput.value, flaggedPacketsData);
+    });
+    flaggedClearSearchButton.addEventListener('click', () => {
+        flaggedSearchInput.value = '';
+        renderTable('flaggedPacketTable', '', flaggedPacketsData); // Show all
+    });
+
+    allPacketsSearchButton.addEventListener('click', () => {
+        renderTable('packetTable', allPacketsSearchInput.value, allPacketsData);
+    });
+    allPacketsSearchInput.addEventListener('keyup', () => { // Live search as user types
+        renderTable('packetTable', allPacketsSearchInput.value, allPacketsData);
+    });
+    allPacketsClearSearchButton.addEventListener('click', () => {
+        allPacketsSearchInput.value = '';
+        renderTable('packetTable', '', allPacketsData); // Show all
+    });
+
+    // Initial setup when the page loads
+    populateInterfacesDropdown(); // Populate dropdown on load
+    updateButtons(); // Set initial button states and start/stop intervals
+    fetchBlockStatus(); // Also fetch initial block status on load
 });
